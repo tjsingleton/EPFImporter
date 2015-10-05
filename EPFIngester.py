@@ -71,7 +71,7 @@ class Ingester(object):
             fieldDelim='\x01'):
         """
         """
-        self.filePath = filePath
+	self.filePath = filePath
         self.fileName = os.path.basename(filePath)
         pref = ("%s_" % tablePrefix if tablePrefix else "")
         self.tableName = (pref + self.fileName).replace("-", "_") #hyphens aren't allowed in table names
@@ -274,7 +274,7 @@ class Ingester(object):
         tableName = (tableName if tableName else self.tableName)
         conn = (connection if connection else self.connect())
         cur = conn.cursor()
-        cur.execute(exStr, (self.dbName, tableName))
+        cur.execute(exStr, ("public", tableName))
         fet = cur.fetchone() #this will always be a 1-tuple; the items's value will be 0 or 1
         doesExist = bool(fet[0])
         cur.close()
@@ -295,7 +295,10 @@ class Ingester(object):
         tableName = (tableName if tableName else self.tableName)
         conn = (connection if connection else self.connect())
         cur = conn.cursor()
-        exStr = """SHOW COLUMNS FROM %s""" % tableName
+        if self.isPostgresql:
+	    exStr = """SELECT column_name, data_type, character_maximum_length FROM INFORMATION_SCHEMA.COLUMNS WHERE table_name = '%s'""" % tableName
+	else: 	
+	    exStr = """SHOW COLUMNS FROM %s""" % tableName
         colCount = cur.execute(exStr) #cur.execute() returns the number of rows,
         # which for SHOW COLUMNS is the number of columns in the table
         cur.close()
@@ -490,11 +493,15 @@ class Ingester(object):
             cur.execute(exStr % ("TABLE", targetTable, targetOld))
             if self.isPostgresql:
                 cur.execute(exStr % ("INDEX", targetTable+'_pk', targetOld+'_pk'))
-        #now rename the new table to replace the old table
+        	conn.commit()
+	#now rename the new table to replace the old table
         try:
-            cur.execute(exStr % ("TABLE", sourceTable, targetTable))
+            sql = exStr % ("TABLE", sourceTable, targetTable)
+            cur.execute(sql)
             if self.isPostgresql:
-                cur.execute(exStr % ("INDEX", sourceTable+'_pk', targetTable+'_pk'))
+                sql = exStr % ("INDEX", sourceTable+'_pk', targetTable+'_pk')
+                cur.execute(sql)
+		conn.commit()                
         except MySQLdb.Error, e:
             LOGGER.error("Error %d: %s", e.args[0], e.args[1])
             revert = True
@@ -508,6 +515,7 @@ class Ingester(object):
                 cur.execute(exStr % ("TABLE", targetOld, targetTable))
                 if self.isPostgresql:
                     cur.execute(exStr % ("INDEX", targetOld+'_pk', targetTable+'_pk'))
+		    conn.commit()
         #Drop sourceTable so it's not hanging around
         #drop the old table
         cur.execute("""DROP TABLE IF EXISTS %s""" % targetOld)
@@ -524,7 +532,8 @@ class Ingester(object):
         conn = self.connect()
         cur = conn.cursor()
         cur.execute("""DROP TABLE IF EXISTS %s""" % self.unionTableName)
-        exStr = """CREATE TABLE %s %s""" % (self.unionTableName, self._incrementalUnionString())
+        exStr = """CREATE TABLE %s AS %s""" % (self.unionTableName, self._incrementalUnionString())
+        print exStr
         cur.execute(exStr)
         if self.isPostgresql:
             conn.commit()
@@ -562,5 +571,5 @@ class Ingester(object):
         The ingest and pruning process should preclude any dupes, so we can use ALL, which should be faster.
         """
         selectString = self._incrementalSelectString()
-        unionString = "IGNORE SELECT * FROM %s UNION ALL %s" % (self.incTableName, selectString)
+        unionString = "SELECT * FROM %s UNION ALL %s" % (self.incTableName, selectString)
         return unionString
